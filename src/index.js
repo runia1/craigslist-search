@@ -39,61 +39,76 @@ async function getCityLinks() {
     }, []);
 }
 
-(async () => {
-    const browser = await puppeteer.launch({
-        //headless: false
-    });
+function uniqueResults(results, newResults) {
+    return newResults.filter(result => !results.includes(result));
+}
 
-    const cityLinks = require('./cityLinks');
+async function getResultsFromCity(page, cityLink, category, searchQuery) {
+    try {
+        let link = '';
+        if (cityLink.indexOf('//') === 0) {
+            // pull the 3 char code off the end
+            const code = cityLink.substr(cityLink.length - 4, 3);
+            const realCityLink = cityLink.substring(0, cityLink.length - 4);
+            link = `https:${realCityLink}/search/${code}/${category}`
+        } else {
+            link = `${cityLink}/search/${category}`;
+        }
 
-    // we can't open 400+ tabs at once, so we need to split this into batches
-    const cityLinkBatches = [];
-    while (cityLinks.length > 0) {
-        cityLinkBatches.push(cityLinks.splice(0, 50));
-    }
+        link += `?query=${searchQuery}`;
 
-    let postsOfInterest = [];
-    for (const cityLinks of cityLinkBatches) {
-        const postsByCities = await Promise.all(cityLinks.map(async cityLink => {
-            const page = await browser.newPage();
-            let link = '';
-            if (cityLink.indexOf('//') === 0) {
-                // pull the 3 char code off the end
-                const code = cityLink.substr(cityLink.length - 4, 3);
-                const realCityLink = cityLink.substring(0, cityLink.length - 4);
-                link = `https:${realCityLink}/search/${code}/ava`
-            } else {
-                link = `${cityLink}/search/ava`;
-            }
-
-            // TODO: make search terms and category a variable
-            link += '?query=kitfox';
-
+        try {
             await page.goto(link);
-            const postLinks = await page.evaluate(
+            return await page.evaluate(
                 () => Array.from(
                     document.querySelectorAll('li[class="result-row"]>a'),
                     a => a.getAttribute('href')
                 )
             );
-            await page.close();
-            return postLinks;
-        }));
-
-        // reduce the result of map down into a single array
-        const posts = postsByCities.reduce((accumulator, postsByCity) => {
-            return [...accumulator, ...postsByCity];
-        }, []);
-
-        postsOfInterest.push(...posts);
-        console.debug('done processing batch');
+        }
+        catch (error) {
+            console.error(error.message);
+            console.error(link);
+        }
+    } catch (error) {
+        console.error(error.message);
     }
+}
+
+(async () => {
+    const category = 'ava';
+    const searchQuery = 'kitfox';
+
+    const browser = await puppeteer.launch({
+        //headless: false
+    });
+
+    const allCityLinks = require('./cityLinks');
+
+    // we can't open 400+ tabs at once, but we can open a substantial amount in parallel, so we
+    // create an initial set and use it sort of like a queue
+    const queue = allCityLinks.splice(0, 50);
+
+    let postsOfInterest = [];
+    await Promise.all(queue.map(async cityLink => {
+        try {
+            const page = await browser.newPage();
+
+            do {
+                const foundResults = await getResultsFromCity(page, cityLink, category, searchQuery);
+                const newResults = uniqueResults(postsOfInterest, foundResults);
+                console.log(`found these new unique results ${newResults}`);
+                postsOfInterest = postsOfInterest.concat(newResults);
+                cityLink = allCityLinks.splice(0, 1)[0];
+            } while (cityLink !== undefined);
+
+            await page.close();
+        } catch (err) {
+            console.error(err);
+        }
+    }));
 
     browser.close();
 
-    // filter out the duplicates
-    postsOfInterest = [...new Set(postsOfInterest)];
-
-    console.log(postsOfInterest);
+    console.log(`found all ${postsOfInterest}`);
 })();
-
